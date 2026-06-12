@@ -404,6 +404,7 @@ def train_model(data, model_type="Neural Network", calibrate=False):
     predictor = make_predictor(model_type).fit(Xs, y, train_end)
     all_probs = predictor.predict_all(Xs)
 
+    iso = None
     if calibrate:
         raw_val = all_probs[train_end:val_end]
         v_m = np.isfinite(raw_val)
@@ -423,7 +424,16 @@ def train_model(data, model_type="Neural Network", calibrate=False):
     metrics['calibration'] = calibration_metrics(test_probs, y[val_end:])
     metrics['calibrated'] = bool(calibrate)
 
-    return predictor, scaler, metrics, test_probs, thresholds, dates[val_end:]
+    # The evaluation model above intentionally stops at the training slice so
+    # validation/test metrics remain honest. For the live signal, refit on all
+    # rows with known targets so today's prediction uses the latest history.
+    live_scaler = StandardScaler().fit(X)
+    live_Xs = live_scaler.transform(X)
+    live_predictor = make_predictor(model_type).fit(live_Xs, y, n)
+    if iso is not None:
+        live_predictor = CalibratedPredictor(live_predictor, iso)
+
+    return live_predictor, live_scaler, metrics, test_probs, thresholds, dates[val_end:]
 
 
 def predict(predictor, scaler, data, thresholds=DEFAULT_THRESHOLDS):
@@ -485,7 +495,13 @@ def multi_horizon_forecast(data, model_type="Neural Network"):
         t_mask = np.isfinite(test_probs)
         cm = _classification_metrics(test_probs[t_mask], y[split:][t_mask])
 
-        prob = predictor.predict_last(scaler.transform(Xs_latest_src))
+        # Report metrics from the held-out split, but use a refit model for
+        # the latest probability so the live forecast is not trained on stale
+        # history.
+        live_scaler = StandardScaler().fit(X)
+        live_Xs = live_scaler.transform(X)
+        live_predictor = make_predictor(model_type).fit(live_Xs, y, n)
+        prob = live_predictor.predict_last(live_scaler.transform(Xs_latest_src))
 
         rows.append({
             'Horizon': f"{h} Day" if h == 1 else f"{h} Days",
@@ -736,7 +752,12 @@ def quick_scan(data, thresholds=DEFAULT_THRESHOLDS):
     test_probs = predictor.predict_all(Xs)[split:]
     cm = _classification_metrics(test_probs, y[split:])
 
-    prob = predictor.predict_last(scaler.transform(data[FEATURES].values))
+    # Keep the out-of-sample scanner metrics from the 80/20 split, then refit
+    # for the displayed live probability using all labeled history.
+    live_scaler = StandardScaler().fit(X)
+    live_Xs = live_scaler.transform(X)
+    live_predictor = make_fast_predictor().fit(live_Xs, y, n)
+    prob = live_predictor.predict_last(live_scaler.transform(data[FEATURES].values))
 
     entry, exit_ = thresholds
     signal = "BUY" if prob > entry else "SELL" if prob < exit_ else "HOLD"
