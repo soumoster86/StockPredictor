@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from data import fetch_data, add_features, FEATURES
+from data import fetch_data, add_features, fetch_index, FEATURES
 from model import (
     train_model, predict, backtest, walk_forward,
     multi_horizon_forecast, explain_prediction,
@@ -92,6 +92,16 @@ def describe_feature(feat, value):
         return f"Daily volatility at {value:.2%}" + (" (elevated)" if value > 0.02 else "")
     if feat == 'ATR_pct':
         return f"Daily trading range {value:.2%} of price"
+    if feat == 'Nifty_Ret':
+        return f"NIFTY moved {value:+.1%} yesterday"
+    if feat == 'Nifty_Mom20':
+        return f"NIFTY 20-day trend: {value:+.1%}"
+    if feat == 'Rel_Str5':
+        side = "Outperforming" if value > 0 else "Underperforming"
+        return f"{side} NIFTY by {abs(value):.1%} over 5 days"
+    if feat == 'Rel_Str20':
+        side = "Outperforming" if value > 0 else "Underperforming"
+        return f"{side} NIFTY by {abs(value):.1%} over 20 days"
     return f"{feat}: {value:.3f}"
 
 
@@ -115,21 +125,27 @@ def get_data(symbol):
     return fetch_data(symbol)
 
 
+@st.cache_data(ttl=3600, max_entries=1, show_spinner=False)
+def get_index():
+    """NIFTY Close series for market-context features (None if unavailable)."""
+    return fetch_index()
+
+
 @st.cache_resource(ttl=3600, max_entries=4, show_spinner="Training model...")
 def get_trained(symbol, model_type, calibrate):
-    data = add_features(get_data(symbol))
+    data = add_features(get_data(symbol), index_close=get_index())
     return (data,) + train_model(data, model_type, calibrate)
 
 
 @st.cache_data(ttl=3600, max_entries=4, show_spinner="Training one model per horizon (1/3/5/10/20 days)...")
 def get_horizons(symbol, model_type):
-    data = add_features(get_data(symbol))
+    data = add_features(get_data(symbol), index_close=get_index())
     return multi_horizon_forecast(data, model_type)
 
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner="Running walk-forward validation (trains one model per fold)...")
 def run_walk_forward(symbol, model_type, calibrate):
-    data = add_features(get_data(symbol))
+    data = add_features(get_data(symbol), index_close=get_index())
     return walk_forward(data, model_type, calibrate=calibrate)
 
 
@@ -150,7 +166,7 @@ def run_scan(stock_items):
             if raw.empty or len(raw) < 400:
                 failures.append((sym, "no/short data"))
                 continue
-            d = add_features(raw)
+            d = add_features(raw, index_close=get_index())
             scan = quick_scan(d)
             if scan is None:
                 failures.append((sym, "too little history"))
@@ -442,7 +458,12 @@ with tab_pred:
     c2.metric("Baseline (majority class)", f"{metrics['baseline_accuracy'] * 100:.2f}%", help=HELP["baseline"])
     c3.metric("Precision", f"{metrics['precision'] * 100:.1f}%", help=HELP["precision"])
     c4.metric("Recall", f"{metrics['recall'] * 100:.1f}%", help=HELP["recall"])
-    st.caption("1-day model, measured on the untouched test slice. Hover the (?) icons for explanations.")
+    _ctx = ("Features include NIFTY market context (index trend + relative strength)."
+            if get_index() is not None else
+            "⚠️ NIFTY data unavailable this session — market-context features are "
+            "neutral; predictions still work, slightly less informed.")
+    st.caption(f"1-day model, measured on the untouched test slice. {_ctx} "
+               "Hover the (?) icons for explanations.")
 
     cal = metrics.get('calibration')
     if cal:
