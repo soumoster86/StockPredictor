@@ -112,6 +112,26 @@ def require_login():
                 st.error("Invalid username or password.")
 
         st.caption("Access is restricted. Drop an email to : soumoster@gmail.com for credentials.")
+        st.markdown(
+            """
+            <div style="
+                position: fixed;
+                left: 0;
+                bottom: 0;
+                width: 100%;
+                text-align: center;
+                padding: 0.75rem 1rem;
+                background: rgba(14, 17, 23, 0.92);
+                color: rgba(250, 250, 250, 0.65);
+                font-size: 0.875rem;
+                z-index: 999;
+            ">
+                ⚠️ Educational tool only — not financial advice.
+                All Rights reserved @Soumoster86.
+            </div>
+            """,
+            unsafe_allow_html=True,
+    )
 
     st.stop()
 
