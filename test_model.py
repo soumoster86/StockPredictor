@@ -5,9 +5,10 @@ import pandas as pd
 from model import (
     build_positions, performance_stats, tune_thresholds, rating_from_prob,
     compute_risk_score, calibration_metrics, find_support_resistance,
-    compute_trade_plan, position_size,
+    compute_trade_plan, position_size, predict,
 )
 from data import add_features
+from data import FEATURES
 from test_data import synth_ohlcv
 
 
@@ -39,6 +40,25 @@ def test_rating_bands():
              (0.60, "Neutral"), (0.45, "Neutral"), (0.40, "Sell")]
     for p, want in cases:
         assert rating_from_prob(p) == want, p
+
+
+def test_predict_signal_uses_tuned_thresholds_not_rating_bands():
+    class DummyPredictor:
+        def __init__(self, prob):
+            self.prob = prob
+
+        def predict_last(self, _):
+            return self.prob
+
+    class IdentityScaler:
+        def transform(self, x):
+            return x
+
+    data = pd.DataFrame({feat: [0.0] for feat in FEATURES})
+
+    assert predict(DummyPredictor(0.58), IdentityScaler(), data, thresholds=(0.55, 0.45))[0] == "BUY"
+    assert predict(DummyPredictor(0.50), IdentityScaler(), data, thresholds=(0.55, 0.45))[0] == "HOLD"
+    assert predict(DummyPredictor(0.40), IdentityScaler(), data, thresholds=(0.55, 0.45))[0] == "SELL"
 
 
 def test_risk_score_orders_calm_vs_wild():

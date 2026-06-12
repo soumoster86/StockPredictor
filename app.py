@@ -77,8 +77,8 @@ HELP = {
     "recall": "Of all days the price actually rose, how many the model caught. High recall = it doesn't miss rallies.",
     "rsi": "Relative Strength Index — a 0–100 speedometer of buying vs selling pressure. Above 70: possibly overbought. Below 30: possibly oversold.",
     "last_close": "Most recent closing price, with change vs the previous trading day.",
-    "prob_up": "The model's estimated chance that the price ends higher over this horizon. 50% = coin flip; further from 50% = more conviction.",
-    "rating": "Plain-language band for the probability: Strong Buy >80%, Buy 65–80%, Neutral 45–65%, Sell <45%.",
+    "prob_up": "The model's estimated chance that the price makes a meaningful up move over this horizon. 50% = coin flip; further from 50% = more conviction.",
+    "rating": "Fixed probability band: Strong Buy >80%, Buy 65–80%, Neutral 45–65%, Sell <45%. This is separate from the trading signal, which uses tuned entry/exit thresholds.",
     "risk_score": "1 (calm) to 10 (wild), blending the stock's volatility, daily trading range, and worst fall of the past year. Higher risk = consider a smaller position size.",
     "horizon_accuracy": "Each horizon has its own model, tested on recent data it never trained on. Longer horizons overlap heavily, so treat their accuracy as optimistic.",
     "model_type": "Ensemble averages a neural network, XGBoost and a Random Forest — usually the most reliable choice. LSTM/GRU read the last 20 days as a sequence instead of one day at a time; slower to train and rarely better on this little data, but worth comparing in the Walk-Forward tab.",
@@ -419,7 +419,7 @@ with tab_pred:
             mode="gauge+number",
             value=confidence * 100,
             number={'suffix': "%", 'font': {'size': 40}},
-            title={'text': "Probability of an UP move (1 day)"},
+            title={'text': "Probability of a meaningful UP move (1 day)"},
             gauge={
                 'axis': {'range': [0, 100], 'ticksuffix': "%"},
                 'bar': {'color': "#2c3e50", 'thickness': 0.25},
@@ -433,12 +433,13 @@ with tab_pred:
         ))
         gauge.update_layout(height=260, margin=dict(l=30, r=30, t=60, b=10))
         st.plotly_chart(gauge, use_container_width=True)
-        st.caption("Bands: 🔴 Sell <45% · 🟠 Neutral 45–65% · 🟢 Buy 65–80% · 🟢🟢 Strong Buy >80%")
+        st.caption("Fixed bands: 🔴 Sell <45% · 🟠 Neutral 45–65% · 🟢 Buy 65–80% · 🟢🟢 Strong Buy >80%")
 
     with r_col:
         rating = rating_from_prob(confidence)
         rating_icon = {"Strong Buy": "🟢🟢", "Buy": "🟢", "Neutral": "🟠", "Sell": "🔴"}[rating]
-        st.metric("Rating (1 day)", f"{rating_icon} {rating}", help=HELP["rating"])
+        st.metric("Probability Band (1 day)", f"{rating_icon} {rating}", help=HELP["rating"])
+        st.caption("Signal uses tuned trading thresholds; this band uses fixed probability ranges.")
 
         risk_icon = {"Low": "🟢", "Medium": "🟡", "High": "🔴"}[risk['level']]
         st.metric("Risk Score", f"{risk_icon} {risk['score']:.1f} / 10 ({risk['level']})",
