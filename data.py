@@ -1,147 +1,100 @@
 # =============================
-# journal.py
+# data.py
 # =============================
-"""Signal journal: log each signal the app produces, then score it against
-what the market actually did. Backtests look backward; this is the app's
-forward test. Storage is a plain CSV next to app.py — human-readable,
-editable, and easy to back up."""
-
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
+import yfinance as yf
 
-JOURNAL_FILE = Path(__file__).parent / "journal.csv"
-MAX_HOLD_DAYS = 20  # trading days before an unresolved BUY plan expires
+# Prediction horizons (trading days)
+HORIZONS = [1, 3, 5, 10, 20]
+NOISE_THRESHOLD = 0.002  # 1-day "meaningful move" threshold; scaled by sqrt(h)
 
-COLUMNS = [
-    "signal_date", "symbol", "name", "model_type", "signal", "probability",
-    "rating", "entry", "stop", "target", "reward_risk", "risk_score", "logged_at",
+# Single source of truth for model features. All are scale-free.
+FEATURES = [
+    # Trend
+    'Close_MA20', 'MA20_MA50', 'MACD_hist',
+    # Momentum
+    'Return', 'Mom5', 'Mom10', 'Mom20', 'RSI',
+    # Volatility (regime information)
+    'Vol20', 'ATR_pct',
+    # Volume
+    'Vol_ratio',
 ]
 
 
-def load_journal(path=JOURNAL_FILE):
-    path = Path(path)
-    if not path.exists():
-        return pd.DataFrame(columns=COLUMNS)
-    df = pd.read_csv(path)
-    for col in COLUMNS:
-        if col not in df.columns:
-            df[col] = np.nan
-    return df[COLUMNS]
+def fetch_data(symbol):
+    """Download daily OHLCV data. Returns an empty DataFrame on any failure."""
+    try:
+        data = yf.download(symbol, start="2020-01-01", auto_adjust=True, progress=False)
+    except Exception:
+        return pd.DataFrame()
+
+    if data is None or data.empty:
+        return pd.DataFrame()
+
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+
+    return data
 
 
-def append_signal(record, path=JOURNAL_FILE):
-    """Append one signal. Deduped on (signal_date, symbol, model_type):
-    logging the same stock twice in a day updates nothing and returns False."""
-    df = load_journal(path)
-    dup = (
-        (df["signal_date"] == record["signal_date"])
-        & (df["symbol"] == record["symbol"])
-        & (df["model_type"] == record["model_type"])
-    )
-    if dup.any():
-        return False
-    df = pd.concat([df, pd.DataFrame([record])[COLUMNS]], ignore_index=True)
-    df.to_csv(path, index=False)
-    return True
+def add_features(data):
+    data = data.copy()
+    close = data['Close']
+    high = data['High']
+    low = data['Low']
 
+    # ----- Trend -----
+    ma20 = close.rolling(20).mean()
+    ma50 = close.rolling(50).mean()
+    data['Close_MA20'] = close / ma20 - 1
+    data['MA20_MA50'] = ma20 / ma50 - 1
 
-def resolve_entry(rec, prices, max_days=MAX_HOLD_DAYS):
-    """Score one journal entry against subsequent price action.
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    macd_signal = macd.ewm(span=9, adjust=False).mean()
+    data['MACD_hist'] = (macd - macd_signal) / close
 
-    BUY: walk forward from the day after the signal. If the day's Low
-    touches the stop -> STOP HIT; if the High touches the target ->
-    TARGET HIT. If both happen the same day, assume STOP HIT (we can't
-    know intraday order, so score conservatively). After `max_days` with
-    neither -> EXPIRED at that day's close. Not enough days yet -> OPEN,
-    with the unrealized return so far.
+    # ----- Momentum -----
+    data['Return'] = close.pct_change()
+    data['Mom5'] = close.pct_change(5)
+    data['Mom10'] = close.pct_change(10)
+    data['Mom20'] = close.pct_change(20)
 
-    SELL / HOLD: no stop/target to resolve — just record the forward
-    return after `max_days` (CLOSED) or so far (OPEN). For SELL, a
-    negative forward return means exiting was the right call."""
-    signal_date = pd.Timestamp(rec["signal_date"])
-    entry = float(rec["entry"])
-    future = prices.loc[prices.index > signal_date].head(max_days)
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    data['RSI'] = 100 - (100 / (1 + rs))
 
-    if future.empty:
-        return {"status": "OPEN", "days": 0, "outcome_return": np.nan, "exit_date": None}
+    # ----- Volatility -----
+    data['Vol20'] = data['Return'].rolling(20).std()
 
-    if rec["signal"] == "BUY":
-        stop, target = float(rec["stop"]), float(rec["target"])
-        for i, (dt, row) in enumerate(future.iterrows(), start=1):
-            hit_stop = float(row["Low"]) <= stop
-            hit_target = float(row["High"]) >= target
-            if hit_stop:  # checked first: same-day double-touch scores as STOP
-                return {"status": "STOP HIT", "days": i,
-                        "outcome_return": stop / entry - 1.0, "exit_date": dt}
-            if hit_target:
-                return {"status": "TARGET HIT", "days": i,
-                        "outcome_return": target / entry - 1.0, "exit_date": dt}
-        last_close = float(future["Close"].iloc[-1])
-        if len(future) >= max_days:
-            return {"status": "EXPIRED", "days": max_days,
-                    "outcome_return": last_close / entry - 1.0,
-                    "exit_date": future.index[-1]}
-        return {"status": "OPEN", "days": len(future),
-                "outcome_return": last_close / entry - 1.0, "exit_date": None}
+    prev_close = close.shift(1)
+    true_range = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    data['ATR_pct'] = true_range.rolling(14).mean() / close
 
-    # SELL / HOLD — informational forward return only
-    last_close = float(future["Close"].iloc[-1])
-    status = "CLOSED" if len(future) >= max_days else "OPEN"
-    return {"status": status, "days": len(future),
-            "outcome_return": last_close / entry - 1.0,
-            "exit_date": future.index[-1] if status == "CLOSED" else None}
+    # ----- Volume -----
+    volume = data['Volume'].fillna(0)
+    vol_ma = volume.rolling(20).mean().replace(0, np.nan)
+    data['Vol_ratio'] = ((volume / vol_ma) - 1).clip(-1, 5).fillna(0)
 
+    # ----- Multi-horizon targets -----
+    # Target_h = 1 if the h-day-forward return exceeds a noise threshold that
+    # scales with sqrt(h) (volatility grows with the square root of time).
+    # The last h rows have no future to look at: they stay NaN — never 0 —
+    # so they can be excluded from training but still used for prediction.
+    for h in HORIZONS:
+        fwd = close.pct_change(h).shift(-h)
+        thr = NOISE_THRESHOLD * np.sqrt(h)
+        data[f'Target_{h}'] = np.where(fwd.notna(), (fwd > thr).astype(float), np.nan)
 
-def resolve_journal(journal_df, price_fetcher, max_days=MAX_HOLD_DAYS):
-    """Resolve every entry. `price_fetcher(symbol)` must return an OHLC
-    DataFrame (the app passes its cached data loader). Symbols that fail
-    to fetch are marked NO DATA rather than crashing the tab."""
-    if journal_df.empty:
-        return journal_df.assign(status=[], days=[], outcome_return=[])
+    data['Target'] = data['Target_1']  # backward-compatible alias
 
-    results = []
-    price_cache = {}
-    for _, rec in journal_df.iterrows():
-        sym = rec["symbol"]
-        if sym not in price_cache:
-            try:
-                price_cache[sym] = price_fetcher(sym)
-            except Exception:
-                price_cache[sym] = pd.DataFrame()
-        prices = price_cache[sym]
-        if prices is None or prices.empty:
-            results.append({"status": "NO DATA", "days": 0,
-                            "outcome_return": np.nan, "exit_date": None})
-        else:
-            results.append(resolve_entry(rec, prices, max_days))
-
-    out = journal_df.copy().reset_index(drop=True)
-    res = pd.DataFrame(results)
-    out[["status", "days", "outcome_return"]] = res[["status", "days", "outcome_return"]]
-    return out
-
-
-def scorecard(resolved_df):
-    """Aggregate honesty report over resolved BUY signals."""
-    buys = resolved_df[resolved_df["signal"] == "BUY"]
-    done = buys[buys["status"].isin(["TARGET HIT", "STOP HIT", "EXPIRED"])]
-
-    out = {
-        "n_signals": int(len(resolved_df)),
-        "n_buys": int(len(buys)),
-        "n_resolved": int(len(done)),
-        "n_open": int((buys["status"] == "OPEN").sum()),
-    }
-    if len(done) == 0:
-        out.update({"target_rate": np.nan, "stop_rate": np.nan,
-                    "win_rate": np.nan, "avg_return": np.nan, "avg_days": np.nan})
-        return out
-
-    out["target_rate"] = float((done["status"] == "TARGET HIT").mean())
-    out["stop_rate"] = float((done["status"] == "STOP HIT").mean())
-    out["win_rate"] = float((done["outcome_return"] > 0).mean())
-    out["avg_return"] = float(done["outcome_return"].mean())
-    out["avg_days"] = float(done["days"].mean())
-    return out
+    # Drop only the indicator warm-up period; keep tail rows whose *targets*
+    # are NaN — their features are valid and needed for live prediction.
+    return data.dropna(subset=FEATURES)
