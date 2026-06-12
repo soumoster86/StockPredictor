@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from data import fetch_data, add_features, fetch_index, FEATURES
+from data import fetch_data, fetch_many, add_features, fetch_index, FEATURES
 from model import (
     train_model, predict, backtest, walk_forward,
     multi_horizon_forecast, explain_prediction,
@@ -131,6 +131,13 @@ def get_index():
     return fetch_index()
 
 
+@st.cache_data(ttl=3600, max_entries=2, show_spinner="Downloading watchlist data (one batched request)...")
+def get_data_batch(symbols):
+    """Whole-watchlist price data in one batched request — far more
+    rate-limit resistant than per-symbol fetches from a shared cloud IP."""
+    return fetch_many(list(symbols))
+
+
 @st.cache_resource(ttl=3600, max_entries=4, show_spinner="Training model...")
 def get_trained(symbol, model_type, calibrate):
     data = add_features(get_data(symbol), index_close=get_index())
@@ -155,6 +162,7 @@ def run_scan(stock_items):
     the progress bar only shows on the first (uncached) run."""
     rows, failures = [], []
     seen = set()
+    batch = get_data_batch(tuple(sym for _, sym in stock_items))
     progress = st.progress(0.0, text="Scanning watchlist...")
     for i, (name, sym) in enumerate(stock_items):
         progress.progress((i + 1) / len(stock_items), text=f"Scanning {sym}...")
@@ -162,7 +170,7 @@ def run_scan(stock_items):
             continue
         seen.add(sym)
         try:
-            raw = get_data(sym)
+            raw = batch.get(sym, pd.DataFrame())
             if raw.empty or len(raw) < 400:
                 failures.append((sym, "no/short data"))
                 continue

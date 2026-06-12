@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"          # matches Streamlit Cloud + torch pin
+          cache: pip
+
+      - name: Install dependencies (same file the cloud uses)
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Smoke check — every module imports with real dependencies
+        run: python -c "import model, data, journal, auth; print('imports OK')"
+
+      - name: Run test suite
+        run: pytest tests/ -v

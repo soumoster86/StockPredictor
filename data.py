@@ -26,13 +26,25 @@ FEATURES = [
 ]
 
 
-def fetch_data(symbol):
-    """Download daily OHLCV data. Returns an empty DataFrame on any failure."""
-    try:
-        data = yf.download(symbol, start="2020-01-01", auto_adjust=True, progress=False)
-    except Exception:
-        return pd.DataFrame()
+def _download_with_retry(retries=2, backoff=0.8, **kwargs):
+    """yf.download with retry on exceptions (rate limits, transient network).
+    Empty results are NOT retried — an empty frame usually means an invalid
+    symbol, and retrying would just make typos feel slow."""
+    import time
+    for attempt in range(retries + 1):
+        try:
+            return yf.download(start="2020-01-01", auto_adjust=True,
+                               progress=False, **kwargs)
+        except Exception:
+            if attempt == retries:
+                return None
+            time.sleep(backoff * (attempt + 1))
+    return None
 
+
+def fetch_data(symbol):
+    """Download daily OHLCV data for one symbol. Empty DataFrame on failure."""
+    data = _download_with_retry(tickers=symbol)
     if data is None or data.empty:
         return pd.DataFrame()
 
@@ -40,6 +52,31 @@ def fetch_data(symbol):
         data.columns = data.columns.get_level_values(0)
 
     return data
+
+
+def fetch_many(symbols):
+    """Download daily OHLCV for many symbols in ONE batched request instead
+    of one request per symbol — the difference between 2 and 46 hits on a
+    rate-limited shared cloud IP. Returns {symbol: DataFrame}; symbols that
+    fail come back as empty DataFrames, never exceptions."""
+    symbols = list(dict.fromkeys(symbols))  # preserve order, drop dups
+    if not symbols:
+        return {}
+    if len(symbols) == 1:
+        return {symbols[0]: fetch_data(symbols[0])}
+
+    raw = _download_with_retry(tickers=symbols, group_by="ticker", threads=True)
+    if raw is None or raw.empty:
+        return {s: pd.DataFrame() for s in symbols}
+
+    out = {}
+    for s in symbols:
+        try:
+            df = raw[s].dropna(how="all")
+        except KeyError:  # ticker entirely absent from the response
+            df = pd.DataFrame()
+        out[s] = df if df is not None and not df.empty else pd.DataFrame()
+    return out
 
 
 def fetch_index(symbol=INDEX_SYMBOL):
