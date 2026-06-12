@@ -603,8 +603,7 @@ with tab_scan:
                         "about anything today. That's information too.")
 
             _scan_styled = _style_map(view_df.style, _color_signal, ["Signal"])
-            _scan_styled = _style_map(_scan_styled, _color_pos_neg,
-                                      ["Day", "To Support", "To Resistance"])
+            _scan_styled = _style_map(_scan_styled, _color_pos_neg, ["Day"])
             st.dataframe(
                 _scan_styled, use_container_width=True, hide_index=True, height=560,
                 column_config={
@@ -647,8 +646,10 @@ with tab_plan:
     s_col, p_col, r_col = st.columns(3)
     if sr['support'] is not None:
         s_dist = (sr['price'] / sr['support'] - 1) * 100
+        # Negative delta -> ↓ arrow (the floor is below); "inverse" renders
+        # it green, matching the green support line on the Charts tab.
         s_col.metric("Support", f"{currency}{sr['support']:,.0f}",
-                     delta=f"{s_dist:.1f}% below price", delta_color="off",
+                     delta=f"-{s_dist:.1f}% below price", delta_color="inverse",
                      help=HELP["support"])
     else:
         s_col.metric("Support", "Not found", help=HELP["support"])
@@ -657,8 +658,10 @@ with tab_plan:
     p_col.metric("Current Price", f"{currency}{sr['price']:,.2f}")
     if sr['resistance'] is not None:
         r_dist = (sr['resistance'] / sr['price'] - 1) * 100
+        # Positive delta -> ↑ arrow (the ceiling is above); "inverse" renders
+        # it red, matching the red resistance line on the Charts tab.
         r_col.metric("Resistance", f"{currency}{sr['resistance']:,.0f}",
-                     delta=f"{r_dist:.1f}% above price", delta_color="off",
+                     delta=f"+{r_dist:.1f}% above price", delta_color="inverse",
                      help=HELP["resistance"])
     else:
         r_col.metric("Resistance", "Not found", help=HELP["resistance"])
