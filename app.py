@@ -97,11 +97,11 @@ HELP = {
     "journal": "Backtests look backward; the journal looks forward. Each logged signal is later scored against what the market actually did — the most honest performance measure this app produces.",
     "target_rate": "Of resolved BUY plans, the share that reached the target before hitting the stop.",
     "journal_status": "TARGET HIT / STOP HIT: which level the price touched first. EXPIRED: neither within 20 trading days — scored at that day's close. OPEN: still running.",
-    "scanner": "A quick screen across the whole watchlist using a fast tree model with default signal thresholds — built to rank, not to decide. Open any stock from the sidebar for the full analysis (ensemble, tuned thresholds, trade plan).",
+    "scanner": "A quick screen across the whole watchlist using a fast tree model with default thresholds — built to rank, not to decide. Open any stock from the sidebar for the full analysis signal.",
     "scan_to_support": "How far the current price sits above its nearest support level. Small = near a floor that has held before; negative would mean below all detected supports.",
     "scan_to_resistance": "How far the nearest ceiling sits above the current price. Small = close to a level where rallies have stalled before.",
     "refresh": "Clears all cached data and models, then reloads with the latest prices. Everything retrains on the next view, so the first load after refreshing is slow — use when you specifically need today's latest close.",
-    "buys_only": "Hide HOLD and SELL rows to focus on actionable names. The summary counts above still reflect the full scan.",
+    "buys_only": "Hide HOLD and SELL screen calls to focus on names worth opening for full analysis. The summary counts above still reflect the full scan.",
 }
 
 # Human-readable descriptions for the explainability panel
@@ -220,7 +220,7 @@ def run_scan(stock_items):
             rows.append({
                 "Name": name, "Symbol": sym,
                 "Price": price, "Day": price / prev - 1,
-                "Signal": scan['signal'], "Probability Up": scan['probability'],
+                "Screen": scan['signal'], "Probability Up": scan['probability'],
                 "Rating": scan['rating'],
                 "Test Acc": scan['accuracy'], "Baseline": scan['baseline'],
                 "Risk": r['score'],
@@ -308,7 +308,7 @@ with st.sidebar:
         """Callback: select this stock app-wide (runs before next rerun)."""
         st.session_state["stock_choice"] = stock_name
 
-    with st.expander("🔍 Screener — top signals", expanded=False):
+    with st.expander("🔍 Screener — top screens", expanded=False):
         if st.button("Scan watchlist", key="sidebar_scan",
                      use_container_width=True, help=HELP["scanner"]):
             st.session_state["scan_requested"] = True
@@ -321,13 +321,13 @@ with st.sidebar:
                 _icons = {"BUY": "🟢", "SELL": "🔴", "HOLD": "⏸️"}
                 for _i, (_, row) in enumerate(side_df.head(5).iterrows()):
                     st.button(
-                        f"{_icons.get(row['Signal'], '⏸️')} {row['Symbol']} · "
+                        f"{_icons.get(row['Screen'], '⏸️')} {row['Symbol']} · "
                         f"{row['Probability Up'] * 100:.0f}%",
                         key=f"jump_{_i}",  # positional: immune to duplicate symbols
                         on_click=_jump_to, args=(row["Name"],),
                         use_container_width=True,
                     )
-                st.caption("Top 5 by probability — tap to analyze. "
+                st.caption("Top 5 screen results by probability — tap to run the full analysis. "
                            "Full ranked table in the 🔍 Scanner tab.")
 
     with st.expander("ℹ️ How this app works"):
@@ -569,8 +569,10 @@ with tab_scan:
     st.markdown(
         f"Screen all **{len(stocks)}** stocks in the current watchlist at once — "
         "a ranked starting point for the day. Uses a fast model with default "
-        "thresholds. 💡 The top 5 also appear in the sidebar's **🔍 Screener** "
-        "panel — tap any of them to jump straight into the full analysis."
+        "thresholds, so its **Screen** column is not the same as the full "
+        "**Signal** shown at the top after you open a stock. 💡 The top 5 also "
+        "appear in the sidebar's **🔍 Screener** panel — tap any of them to jump "
+        "straight into the full analysis."
     )
     if st.button(f"🔍 Scan watchlist ({len(stocks)} stocks)", type="primary",
                  help=HELP["scanner"]):
@@ -589,21 +591,31 @@ with tab_scan:
             st.warning("No stocks could be scanned — check the watchlist symbols "
                        "or try again later (data source may be rate-limiting).")
         else:
-            n_buy = int((scan_df["Signal"] == "BUY").sum())
-            n_sell = int((scan_df["Signal"] == "SELL").sum())
+            n_buy = int((scan_df["Screen"] == "BUY").sum())
+            n_sell = int((scan_df["Screen"] == "SELL").sum())
             sc1, sc2, sc3 = st.columns(3)
             sc1.metric("Scanned", f"{len(scan_df)} stocks")
-            sc2.metric("BUY signals", n_buy)
-            sc3.metric("SELL signals", n_sell)
+            sc2.metric("BUY screens", n_buy)
+            sc3.metric("SELL screens", n_sell)
 
-            buys_only = st.checkbox("🟢 Show BUY signals only", value=False,
+            current_screen = scan_df[scan_df["Symbol"] == symbol]
+            if not current_screen.empty:
+                screen_call = current_screen.iloc[0]["Screen"]
+                if screen_call != signal:
+                    st.warning(
+                        f"Scanner shows **{screen_call}** for {symbol}, while the full "
+                        f"analysis signal is **{signal}**. Trust the full Signal for the "
+                        "selected stock; the Scanner is only a fast ranking pass."
+                    )
+
+            buys_only = st.checkbox("🟢 Show BUY screens only", value=False,
                                     help=HELP["buys_only"])
-            view_df = scan_df[scan_df["Signal"] == "BUY"] if buys_only else scan_df
+            view_df = scan_df[scan_df["Screen"] == "BUY"] if buys_only else scan_df
             if buys_only and view_df.empty:
-                st.info("No BUY signals in this scan — the model isn't confident "
+                st.info("No BUY screen calls in this scan — the fast scanner isn't confident "
                         "about anything today. That's information too.")
 
-            _scan_styled = _style_map(view_df.style, _color_signal, ["Signal"])
+            _scan_styled = _style_map(view_df.style, _color_signal, ["Screen"])
             _scan_styled = _style_map(_scan_styled, _color_pos_neg, ["Day"])
             st.dataframe(
                 _scan_styled, use_container_width=True, hide_index=True, height=560,
@@ -615,6 +627,8 @@ with tab_scan:
                     "Probability Up": st.column_config.ProgressColumn(
                         format="percent", min_value=0, max_value=1,
                         help=HELP["prob_up"]),
+                    "Screen": st.column_config.TextColumn(
+                        "Screen Call", help=HELP["scanner"]),
                     "Test Acc": st.column_config.NumberColumn(
                         format="percent", help=HELP["accuracy"]),
                     "Baseline": st.column_config.NumberColumn(
@@ -627,10 +641,11 @@ with tab_scan:
                         format="percent", help=HELP["scan_to_resistance"]),
                 })
             st.caption(
-                "Ranked by probability of an up-move (1-day). ⚠️ Quick screen "
+                "Ranked by probability of a meaningful up-move (1-day). ⚠️ Quick screen "
                 "only — fast tree model, default thresholds, no per-stock tuning. "
+                "Open a stock and use the top Signal for the full model decision. "
                 "Accuracy that doesn't beat its baseline means that stock's "
-                "signal is noise. Results cached for 1 hour."
+                "screen call is noise. Results cached for 1 hour."
             )
             st.download_button("⬇️ Download scan as CSV",
                                scan_df.to_csv(index=False).encode(),
