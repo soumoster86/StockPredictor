@@ -128,6 +128,47 @@ def run_walk_forward(symbol, model_type, calibrate):
     return walk_forward(data, model_type, calibrate=calibrate)
 
 
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+def run_scan(stock_items):
+    """Scan the whole watchlist with the fast model. Cached for an hour;
+    the progress bar only shows on the first (uncached) run."""
+    rows, failures = [], []
+    progress = st.progress(0.0, text="Scanning watchlist...")
+    for i, (name, sym) in enumerate(stock_items):
+        progress.progress((i + 1) / len(stock_items), text=f"Scanning {sym}...")
+        try:
+            raw = get_data(sym)
+            if raw.empty or len(raw) < 400:
+                failures.append((sym, "no/short data"))
+                continue
+            d = add_features(raw)
+            scan = quick_scan(d)
+            if scan is None:
+                failures.append((sym, "too little history"))
+                continue
+            r = compute_risk_score(d)
+            s = find_support_resistance(d)
+            price = float(d['Close'].iloc[-1])
+            prev = float(d['Close'].iloc[-2])
+            rows.append({
+                "Name": name, "Symbol": sym,
+                "Price": price, "Day": price / prev - 1,
+                "Signal": scan['signal'], "Probability Up": scan['probability'],
+                "Rating": scan['rating'],
+                "Test Acc": scan['accuracy'], "Baseline": scan['baseline'],
+                "Risk": r['score'],
+                "To Support": (price / s['support'] - 1) if s['support'] else None,
+                "To Resistance": (s['resistance'] / price - 1) if s['resistance'] else None,
+            })
+        except Exception as e:
+            failures.append((sym, str(e)[:60]))
+    progress.empty()
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("Probability Up", ascending=False).reset_index(drop=True)
+    return df, failures
+
+
 # ---------- Sidebar ----------
 with st.sidebar:
     logout_button()
