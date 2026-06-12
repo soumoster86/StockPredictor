@@ -102,7 +102,12 @@ def load_stock_list(file_or_path):
     if not {"name", "symbol"}.issubset(df.columns):
         raise ValueError("CSV must have 'Name' and 'Symbol' columns.")
     df = df.dropna(subset=["name", "symbol"])
-    return dict(zip(df["name"].str.strip(), df["symbol"].str.strip().str.upper()))
+    df["name"] = df["name"].astype(str).str.strip()
+    df["symbol"] = df["symbol"].astype(str).str.strip().str.upper()
+    # One entry per symbol AND per name — duplicate rows in the CSV would
+    # otherwise produce duplicate scan rows and duplicate widget keys.
+    df = df.drop_duplicates(subset=["symbol"]).drop_duplicates(subset=["name"])
+    return dict(zip(df["name"], df["symbol"]))
 
 
 @st.cache_data(ttl=3600, max_entries=20, show_spinner="Downloading price data...")
@@ -133,9 +138,13 @@ def run_scan(stock_items):
     """Scan the whole watchlist with the fast model. Cached for an hour;
     the progress bar only shows on the first (uncached) run."""
     rows, failures = [], []
+    seen = set()
     progress = st.progress(0.0, text="Scanning watchlist...")
     for i, (name, sym) in enumerate(stock_items):
         progress.progress((i + 1) / len(stock_items), text=f"Scanning {sym}...")
+        if sym in seen:
+            continue
+        seen.add(sym)
         try:
             raw = get_data(sym)
             if raw.empty or len(raw) < 400:
@@ -245,11 +254,11 @@ with st.sidebar:
                 st.caption("No results — see the Scanner tab for details.")
             else:
                 _icons = {"BUY": "🟢", "SELL": "🔴", "HOLD": "⏸️"}
-                for _, row in side_df.head(5).iterrows():
+                for _i, (_, row) in enumerate(side_df.head(5).iterrows()):
                     st.button(
                         f"{_icons.get(row['Signal'], '⏸️')} {row['Symbol']} · "
                         f"{row['Probability Up'] * 100:.0f}%",
-                        key=f"jump_{row['Symbol']}",
+                        key=f"jump_{_i}",  # positional: immune to duplicate symbols
                         on_click=_jump_to, args=(row["Name"],),
                         use_container_width=True,
                     )
