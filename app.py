@@ -27,6 +27,38 @@ current_user = require_login()  # everything below runs only when authenticated
 STOCKS_FILE = Path(__file__).parent / "stocks.csv"
 DEFAULT_STOCKS = {"Reliance Industries": "RELIANCE.NS", "Infosys": "INFY.NS"}
 
+# ---------- Table color semantics ----------
+GREEN, RED, AMBER = "#36b37e", "#ef553b", "#f4a62a"
+
+
+def _style_map(styler, func, subset):
+    """pandas renamed Styler.applymap -> Styler.map; support both."""
+    fn = getattr(styler, "map", None) or styler.applymap
+    return fn(func, subset=subset)
+
+
+def _color_signal(v):
+    return {"BUY": f"color: {GREEN}; font-weight: 600",
+            "SELL": f"color: {RED}; font-weight: 600",
+            "HOLD": f"color: {AMBER}"}.get(v, "")
+
+
+def _color_status(v):
+    return {"TARGET HIT": f"color: {GREEN}; font-weight: 600",
+            "STOP HIT": f"color: {RED}; font-weight: 600",
+            "EXPIRED": "color: #8a8f98",
+            "OPEN": "color: #4f9cf9"}.get(v, "")
+
+
+def _color_pos_neg(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if pd.isna(v) or v == 0:
+        return ""
+    return f"color: {GREEN}" if v > 0 else f"color: {RED}"
+
 # ---------------------------------------------------------------
 # Plain-language explanations, used as (?) tooltips
 # ---------------------------------------------------------------
@@ -68,6 +100,8 @@ HELP = {
     "scanner": "A quick screen across the whole watchlist using a fast tree model with default signal thresholds — built to rank, not to decide. Open any stock from the sidebar for the full analysis (ensemble, tuned thresholds, trade plan).",
     "scan_to_support": "How far the current price sits above its nearest support level. Small = near a floor that has held before; negative would mean below all detected supports.",
     "scan_to_resistance": "How far the nearest ceiling sits above the current price. Small = close to a level where rallies have stalled before.",
+    "refresh": "Clears all cached data and models, then reloads with the latest prices. Everything retrains on the next view, so the first load after refreshing is slow — use when you specifically need today's latest close.",
+    "buys_only": "Hide HOLD and SELL rows to focus on actionable names. The summary counts above still reflect the full scan.",
 }
 
 # Human-readable descriptions for the explainability panel
@@ -263,6 +297,13 @@ with st.sidebar:
 
     calibrate = st.checkbox("Calibrate probabilities", value=False, help=HELP["calibrate"])
 
+    if st.button("🔄 Refresh data", use_container_width=True, help=HELP["refresh"]):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.session_state.pop("scan_requested", None)
+        st.toast("Caches cleared — reloading with fresh data…", icon="🔄")
+        st.rerun()
+
     def _jump_to(stock_name):
         """Callback: select this stock app-wide (runs before next rerun)."""
         st.session_state["stock_choice"] = stock_name
@@ -349,6 +390,18 @@ with head_l:
 with head_r:
     st.metric("Last Close", f"{currency}{last_close:,.2f}", delta=f"{day_change:+.2f}%",
               help=HELP["last_close"])
+    _spark = data['Close'].tail(30)
+    _spark_fig = go.Figure(go.Scatter(
+        x=_spark.index, y=_spark.values, mode="lines",
+        line=dict(width=2, color=GREEN if day_change >= 0 else RED),
+        hoverinfo="skip"))
+    _spark_fig.update_layout(
+        height=70, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(_spark_fig, use_container_width=True,
+                    config={"displayModeBar": False})
+    st.caption(f"30-day trend · data as of {data.index[-1]:%d %b %Y}")
 
 # ---------- Tabs ----------
 (tab_pred, tab_scan, tab_plan, tab_back, tab_wf,
@@ -522,6 +575,12 @@ with tab_scan:
                  help=HELP["scanner"]):
         st.session_state["scan_requested"] = True
 
+    if not st.session_state.get("scan_requested"):
+        st.info("👆 Run a scan to rank the whole watchlist by the model's "
+                "probability of an up-move — typically the fastest way to find "
+                "the day's interesting names. First run downloads data for every "
+                "stock (one batched request); results are cached for an hour.")
+
     if st.session_state.get("scan_requested"):
         scan_df, scan_failures = run_scan(tuple(stocks.items()))
 
@@ -536,8 +595,18 @@ with tab_scan:
             sc2.metric("BUY signals", n_buy)
             sc3.metric("SELL signals", n_sell)
 
+            buys_only = st.checkbox("🟢 Show BUY signals only", value=False,
+                                    help=HELP["buys_only"])
+            view_df = scan_df[scan_df["Signal"] == "BUY"] if buys_only else scan_df
+            if buys_only and view_df.empty:
+                st.info("No BUY signals in this scan — the model isn't confident "
+                        "about anything today. That's information too.")
+
+            _scan_styled = _style_map(view_df.style, _color_signal, ["Signal"])
+            _scan_styled = _style_map(_scan_styled, _color_pos_neg,
+                                      ["Day", "To Support", "To Resistance"])
             st.dataframe(
-                scan_df, use_container_width=True, hide_index=True, height=560,
+                _scan_styled, use_container_width=True, hide_index=True, height=560,
                 column_config={
                     "Price": st.column_config.NumberColumn(format="%.2f"),
                     "Day": st.column_config.NumberColumn(
@@ -720,6 +789,8 @@ with tab_wf:
                 'Sharpe': '{:.2f}', 'Max Drawdown': '{:.1%}',
                 'Exposure': '{:.0%}', 'Entry Thr': '{:.2f}', 'Exit Thr': '{:.2f}',
             }, na_rep="—")
+            styled = _style_map(styled, _color_pos_neg,
+                                ['Strategy Return', 'Buy & Hold', 'Sharpe'])
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
             sharpes = wf['Sharpe'].dropna()
@@ -757,6 +828,7 @@ with tab_journal:
             "logged_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
         }
         if append_signal(record):
+            st.toast(f"Logged {signal} for {symbol}", icon="📝")
             st.success(f"Logged: {signal} {symbol} @ {currency}{plan['entry']:,.2f} "
                        f"(stop {currency}{plan['stop']:,.2f} / target {currency}{plan['target']:,.2f})")
         else:
@@ -787,8 +859,11 @@ with tab_journal:
         show = resolved[["signal_date", "symbol", "model_type", "signal", "probability",
                          "entry", "stop", "target", "status", "days",
                          "outcome_return"]].sort_values("signal_date", ascending=False)
+        _journal_styled = _style_map(show.style, _color_status, ["status"])
+        _journal_styled = _style_map(_journal_styled, _color_signal, ["signal"])
+        _journal_styled = _style_map(_journal_styled, _color_pos_neg, ["outcome_return"])
         st.dataframe(
-            show, use_container_width=True, hide_index=True,
+            _journal_styled, use_container_width=True, hide_index=True,
             column_config={
                 "signal_date": "Date", "symbol": "Symbol", "model_type": "Model",
                 "signal": "Signal",
