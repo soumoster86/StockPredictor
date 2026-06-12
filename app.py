@@ -493,7 +493,7 @@ with tab_pred:
         if pos:
             for c in pos:
                 st.markdown(f"🟢 {describe_feature(c['feature'], c['value'])} "
-                            f"&nbsp; `+{c['contribution'] * 100:.1f}%`")
+                            f"&nbsp; :green[**+{c['contribution'] * 100:.1f}%**]")
         else:
             st.markdown("_Nothing significant_")
     with e_col2:
@@ -501,7 +501,7 @@ with tab_pred:
         if neg:
             for c in neg:
                 st.markdown(f"🔴 {describe_feature(c['feature'], c['value'])} "
-                            f"&nbsp; `{c['contribution'] * 100:.1f}%`")
+                            f"&nbsp; :red[**{c['contribution'] * 100:.1f}%**]")
         else:
             st.markdown("_Nothing significant_")
 
