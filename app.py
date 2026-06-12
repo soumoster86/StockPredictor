@@ -928,5 +928,23 @@ with tab_charts:
     st.plotly_chart(rsi_fig, use_container_width=True)
     st.caption(HELP["rsi"])
 
-st.caption("⚠️ Educational tool only — not financial advice. "
-           "Past backtest performance does not predict future results.")
+st.markdown(
+    """
+    <div style="
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        text-align: center;
+        padding: 0.75rem 1rem;
+        background: rgba(14, 17, 23, 0.92);
+        color: rgba(250, 250, 250, 0.65);
+        font-size: 0.875rem;
+        z-index: 999;
+    ">
+        ⚠️ Educational tool only — not financial advice.
+        All Rights reserved @Soumoster86.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
