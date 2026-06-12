@@ -111,7 +111,7 @@ def require_login():
                 st.session_state["auth_attempts"] = attempts + 1
                 st.error("Invalid username or password.")
 
-        st.caption("Access is restricted. Contact the app owner for an account.")
+        st.caption("Access is restricted. Drop an email to : soumoster@gmail.com for credentials.")
 
     st.stop()
 
