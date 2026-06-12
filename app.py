@@ -198,9 +198,16 @@ with st.sidebar:
 
     st.caption(f"Showing {list_source}. Edit `stocks.csv` next to app.py to change the default list.")
 
+    # Keyed selectbox so the sidebar screener can jump to a stock; guard
+    # against a stored choice that no longer exists (e.g. new watchlist).
+    _options = list(stocks.keys()) + ["Custom symbol…"]
+    if st.session_state.get("stock_choice") not in _options:
+        st.session_state.pop("stock_choice", None)
+
     choice = st.selectbox(
         "Select a stock",
-        options=list(stocks.keys()) + ["Custom symbol…"],
+        options=_options,
+        key="stock_choice",
         help="Type to search the list. Pick 'Custom symbol…' for any other ticker.",
     )
 
@@ -222,6 +229,32 @@ with st.sidebar:
                    "Training takes a little longer.")
 
     calibrate = st.checkbox("Calibrate probabilities", value=False, help=HELP["calibrate"])
+
+    def _jump_to(stock_name):
+        """Callback: select this stock app-wide (runs before next rerun)."""
+        st.session_state["stock_choice"] = stock_name
+
+    with st.expander("🔍 Screener — top signals", expanded=False):
+        if st.button("Scan watchlist", key="sidebar_scan",
+                     use_container_width=True, help=HELP["scanner"]):
+            st.session_state["scan_requested"] = True
+
+        if st.session_state.get("scan_requested"):
+            side_df, _side_fails = run_scan(tuple(stocks.items()))
+            if side_df.empty:
+                st.caption("No results — see the Scanner tab for details.")
+            else:
+                _icons = {"BUY": "🟢", "SELL": "🔴", "HOLD": "⏸️"}
+                for _, row in side_df.head(5).iterrows():
+                    st.button(
+                        f"{_icons.get(row['Signal'], '⏸️')} {row['Symbol']} · "
+                        f"{row['Probability Up'] * 100:.0f}%",
+                        key=f"jump_{row['Symbol']}",
+                        on_click=_jump_to, args=(row["Name"],),
+                        use_container_width=True,
+                    )
+                st.caption("Top 5 by probability — tap to analyze. "
+                           "Full ranked table in the 🔍 Scanner tab.")
 
     with st.expander("ℹ️ How this app works"):
         st.markdown(
@@ -444,7 +477,8 @@ with tab_scan:
     st.markdown(
         f"Screen all **{len(stocks)}** stocks in the current watchlist at once — "
         "a ranked starting point for the day. Uses a fast model with default "
-        "thresholds; open any stock from the sidebar for the full analysis."
+        "thresholds. 💡 The top 5 also appear in the sidebar's **🔍 Screener** "
+        "panel — tap any of them to jump straight into the full analysis."
     )
     if st.button(f"🔍 Scan watchlist ({len(stocks)} stocks)", type="primary",
                  help=HELP["scanner"]):
